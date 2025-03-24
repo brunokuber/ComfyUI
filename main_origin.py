@@ -10,7 +10,6 @@ from app.logger import setup_logger
 import itertools
 import utils.extra_config
 import logging
-import json
 
 if __name__ == "__main__":
     #NOTE: These do not do anything on core ComfyUI which should already have no communication with the internet, they are for custom nodes.
@@ -141,7 +140,6 @@ import nodes
 import comfy.model_management
 import comfyui_version
 import app.logger
-from node_state_manager import NodeStateManager
 
 
 def cuda_malloc_warning():
@@ -291,37 +289,8 @@ def start_comfyui(asyncio_loop=None):
         await prompt_server.setup()
         await run(prompt_server, address=args.listen, port=args.port, verbose=not args.dont_print_server, call_on_start=call_on_start)
 
-    # 初始化节点状态管理器
-    server.node_state_manager = NodeStateManager()
-    
-    # 预热指定节点(可选)
-    if args.preload_nodes:
-        preload_nodes_from_config(server.node_state_manager)
-
     # Returning these so that other code can integrate with the ComfyUI loop and server
     return asyncio_loop, prompt_server, start_all
-
-
-def preload_nodes_from_config(state_manager):
-    """从配置文件加载预热节点"""
-    config_path = os.path.join(os.path.dirname(os.path.realpath(__file__)), "preload_nodes.json")
-    if os.path.exists(config_path):
-        try:
-            with open(config_path, 'r') as f:
-                config = json.load(f)
-                
-            for node_config in config:
-                node_id = node_config.get("id")
-                node_data = node_config.get("data")
-                if node_id and node_data:
-                    logging.info(f"Preloading node: {node_id}")
-                    state_manager.register_persistent_node(node_id, node_data)
-                    
-                    # 如果需要立即加载模型，可以在这里执行节点
-                    if node_config.get("preload", False):
-                        execute_single_node(None, node_id, node_data, None, state_manager)
-        except Exception as e:
-            logging.error(f"Error preloading nodes: {e}")
 
 
 if __name__ == "__main__":
