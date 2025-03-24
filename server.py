@@ -34,6 +34,7 @@ from app.model_manager import ModelFileManager
 from app.custom_node_manager import CustomNodeManager
 from typing import Optional
 from api_server.routes.internal.internal_routes import InternalRoutes
+from node_state_manager import NodeStateManager
 
 class BinaryEventTypes:
     PREVIEW_IMAGE = 1
@@ -188,6 +189,9 @@ class PromptServer():
         self.client_id = None
 
         self.on_prompt_handlers = []
+
+        # Create node state manager
+        self.node_state_manager = NodeStateManager()
 
         @routes.get('/ws')
         async def websocket_handler(request):
@@ -701,6 +705,90 @@ class PromptServer():
                     self.prompt_queue.delete_history_item(id_to_delete)
 
             return web.Response(status=200)
+
+        @routes.post('/api/node/register')
+        async def register_node(request):
+            """注册一个持久化节点"""
+            data = await request.json()
+            node_id = data.get("node_id")
+            node_data = data.get("node_data")
+            
+            if not node_id or not node_data:
+                return web.json_response({"error": "Missing node_id or node_data"}, status=400)
+            
+            self.node_state_manager.register_persistent_node(node_id, node_data)
+            return web.json_response({"status": "success"})
+
+        @routes.post('/api/node/execute/{node_id}')
+        async def execute_node(request):
+            """执行特定节点"""
+            node_id = request.match_info['node_id']
+            data = await request.json()
+            
+            # 获取节点数据
+            node_data = None
+            if node_id in self.node_state_manager.persistent_nodes:
+                node_data = self.node_state_manager.persistent_nodes[node_id]["data"]
+            elif "node_data" in data:
+                node_data = data["node_data"]
+            else:
+                return web.json_response({"error": "Node not registered and no node_data provided"}, status=400)
+            
+            # 获取自定义输入
+            custom_inputs = data.get("inputs", {})
+            
+            # 执行节点
+            outputs, error = execution.execute_single_node(self, node_id, node_data, custom_inputs, self.node_state_manager)
+            
+            if error:
+                return web.json_response({"error": error}, status=400)
+            
+            return web.json_response({
+                "status": "success",
+                "node_id": node_id,
+                "outputs": [output.tolist() if hasattr(output, "tolist") else output for output in outputs]
+            })
+
+        @routes.get('/api/node/output/{node_id}')
+        async def get_node_output(request):
+            """获取节点的输出"""
+            node_id = request.match_info['node_id']
+            output_index = int(request.query.get('index', '0'))
+            
+            output = self.node_state_manager.get_node_output(node_id, output_index)
+            if output is None:
+                return web.json_response({"error": "Output not found"}, status=404)
+            
+            # 处理不同类型的输出
+            if isinstance(output, torch.Tensor):
+                # 张量转换为可序列化格式
+                output_data = output.tolist()
+            elif hasattr(output, "__dict__"):
+                # 对象转换为字典
+                output_data = output.__dict__
+            else:
+                output_data = output
+            
+            return web.json_response({
+                "node_id": node_id,
+                "output_index": output_index,
+                "output": output_data
+            })
+
+        @routes.post('/api/node/input/{node_id}')
+        async def set_node_input(request):
+            """设置节点的自定义输入"""
+            node_id = request.match_info['node_id']
+            data = await request.json()
+            
+            input_name = data.get("name")
+            input_value = data.get("value")
+            
+            if not input_name:
+                return web.json_response({"error": "Missing input name"}, status=400)
+            
+            self.node_state_manager.set_custom_input(node_id, input_name, input_value)
+            return web.json_response({"status": "success"})
 
     async def setup(self):
         timeout = aiohttp.ClientTimeout(total=None) # no timeout
