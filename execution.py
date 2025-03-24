@@ -999,3 +999,65 @@ class PromptQueue:
                 return ret
             else:
                 return self.flags.copy()
+
+def execute_single_node(server, node_id, node_data, custom_inputs=None, state_manager=None):
+    """执行单个节点，不依赖完整工作流"""
+    
+    # 检查是否有持久化实例
+    node_instance = None
+    if state_manager and node_id in state_manager.persistent_nodes:
+        node_instance = state_manager.persistent_nodes[node_id]["instance"]
+    
+    # 创建节点实例
+    class_type = node_data["class_type"]
+    if node_instance is None:
+        class_def = nodes.NODE_CLASS_MAPPINGS[class_type]
+        node_instance = class_def()
+        
+        # 保存实例如果需要持久化
+        if state_manager and node_id in state_manager.persistent_nodes:
+            state_manager.persistent_nodes[node_id]["instance"] = node_instance
+    
+    # 处理输入
+    inputs = node_data["inputs"]
+    if custom_inputs:
+        # 合并自定义输入
+        for input_name, input_value in custom_inputs.items():
+            inputs[input_name] = input_value
+    
+    # 从状态管理器获取输入
+    if state_manager:
+        stored_inputs = state_manager.get_custom_inputs(node_id)
+        for input_name, input_value in stored_inputs.items():
+            inputs[input_name] = input_value
+    
+    # 准备输入参数
+    input_args = []
+    for input_name in node_instance.INPUT_TYPES()["required"]:
+        if input_name in inputs:
+            # 如果输入是节点引用，从状态管理器获取
+            if isinstance(inputs[input_name], list) and len(inputs[input_name]) == 2:
+                ref_node_id, output_idx = inputs[input_name]
+                if state_manager:
+                    input_value = state_manager.get_node_output(ref_node_id, output_idx)
+                    if input_value is not None:
+                        input_args.append(input_value)
+                    else:
+                        return None, f"Referenced node output {ref_node_id}:{output_idx} not found"
+            else:
+                input_args.append(inputs[input_name])
+        else:
+            return None, f"Missing required input: {input_name}"
+    
+    # 执行节点
+    try:
+        func_name = getattr(node_instance, "FUNCTION", "execute")
+        outputs = getattr(node_instance, func_name)(*input_args)
+        
+        # 保存输出
+        if state_manager:
+            state_manager.set_node_output(node_id, outputs)
+            
+        return outputs, None
+    except Exception as e:
+        return None, str(e)
