@@ -1019,7 +1019,7 @@ def execute_single_node(server, node_id, node_data, custom_inputs=None, state_ma
             state_manager.persistent_nodes[node_id]["instance"] = node_instance
     
     # 处理输入
-    inputs = node_data["inputs"]
+    inputs = copy.deepcopy(node_data["inputs"])  # 创建输入的深拷贝
     if custom_inputs:
         # 合并自定义输入
         for input_name, input_value in custom_inputs.items():
@@ -1039,6 +1039,7 @@ def execute_single_node(server, node_id, node_data, custom_inputs=None, state_ma
             if isinstance(inputs[input_name], list) and len(inputs[input_name]) == 2:
                 ref_node_id, output_idx = inputs[input_name]
                 if state_manager:
+                    # 直接获取原始对象引用，不进行任何转换或处理
                     input_value = state_manager.get_node_output(ref_node_id, output_idx)
                     if input_value is not None:
                         input_args.append(input_value)
@@ -1054,10 +1055,11 @@ def execute_single_node(server, node_id, node_data, custom_inputs=None, state_ma
         func_name = getattr(node_instance, "FUNCTION", "execute")
         outputs = getattr(node_instance, func_name)(*input_args)
         
-        # 保存输出
+        # 保存输出 - 直接存储原始对象引用
         if state_manager:
             state_manager.set_node_output(node_id, outputs)
             
         return outputs, None
     except Exception as e:
+        traceback.print_exc()  # 打印完整堆栈跟踪以便调试
         return None, str(e)
