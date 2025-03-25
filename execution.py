@@ -1000,64 +1000,116 @@ class PromptQueue:
             else:
                 return self.flags.copy()
 
-def execute_single_node(server, node_id, node_data, custom_inputs=None, state_manager=None):
-    """执行单个节点，不依赖完整工作流"""
-    
-    # 检查是否有持久化实例
-    node_instance = None
-    if state_manager and node_id in state_manager.persistent_nodes:
-        node_instance = state_manager.persistent_nodes[node_id]["instance"]
-    
-    # 创建节点实例
+def execute_single_node(server, node_id, node_data, extra_data, state_manager):
     class_type = node_data["class_type"]
-    if node_instance is None:
-        class_def = nodes.NODE_CLASS_MAPPINGS[class_type]
-        node_instance = class_def()
-        
-        # 保存实例如果需要持久化
-        if state_manager and node_id in state_manager.persistent_nodes:
-            state_manager.persistent_nodes[node_id]["instance"] = node_instance
     
-    # 处理输入
-    inputs = copy.deepcopy(node_data["inputs"])  # 创建输入的深拷贝
-    if custom_inputs:
-        # 合并自定义输入
-        for input_name, input_value in custom_inputs.items():
-            inputs[input_name] = input_value
+    # 确保节点类型存在
+    if class_type not in nodes.NODE_CLASS_MAPPINGS:
+        return None, f"Node class {class_type} not found"
     
-    # 从状态管理器获取输入
-    if state_manager:
-        stored_inputs = state_manager.get_custom_inputs(node_id)
-        for input_name, input_value in stored_inputs.items():
-            inputs[input_name] = input_value
+    # 获取节点类和实例
+    node_class = nodes.NODE_CLASS_MAPPINGS[class_type]
     
-    # 准备输入参数
-    input_args = []
-    for input_name in node_instance.INPUT_TYPES()["required"]:
-        if input_name in inputs:
-            # 如果输入是节点引用，从状态管理器获取
-            if isinstance(inputs[input_name], list) and len(inputs[input_name]) == 2:
-                ref_node_id, output_idx = inputs[input_name]
-                if state_manager:
-                    # 直接获取原始对象引用，不进行任何转换或处理
-                    input_value = state_manager.get_node_output(ref_node_id, output_idx)
-                    if input_value is not None:
-                        input_args.append(input_value)
+    # 获取需要的输入参数
+    input_types = node_class().INPUT_TYPES()
+    required_inputs = input_types.get("required", {})
+    
+    # 构建输入值字典
+    input_names_to_values = {}
+    
+    for input_name in required_inputs:
+        if input_name in node_data["inputs"]:
+            input_value = node_data["inputs"][input_name]
+            
+            # 处理引用其他节点输出的情况
+            if isinstance(input_value, list) and len(input_value) == 2:
+                if isinstance(input_value[0], str) and isinstance(input_value[1], int):
+                    ref_node_id, output_idx = input_value
+                    print(f"  Input {input_name} references node {ref_node_id} output {output_idx}")
+                    
+                    if state_manager and ref_node_id in state_manager.node_outputs:
+                        raw_outputs = state_manager.node_outputs[ref_node_id]
+                        
+                        # 正确处理输出类型
+                        if isinstance(raw_outputs, (list, tuple)):
+                            if 0 <= output_idx < len(raw_outputs):
+                                resolved_value = raw_outputs[output_idx]
+                                print(f"  Retrieved output type: {type(resolved_value).__name__}")
+                                input_names_to_values[input_name] = resolved_value  # 存储到字典
+                            else:
+                                return None, f"Output index {output_idx} out of range for node {ref_node_id}"
+                        else:
+                            # 单一输出处理
+                            if output_idx == 0:
+                                print(f"  Retrieved single output type: {type(raw_outputs).__name__}")
+                                input_names_to_values[input_name] = raw_outputs  # 存储到字典
+                            else:
+                                return None, f"Single output node {ref_node_id} does not have output index {output_idx}"
                     else:
                         return None, f"Referenced node output {ref_node_id}:{output_idx} not found"
             else:
-                input_args.append(inputs[input_name])
+                # 直接值输入
+                input_names_to_values[input_name] = input_value  # 存储到字典
         else:
             return None, f"Missing required input: {input_name}"
     
+    # 获取函数定义和参数顺序
+    func_name = getattr(node_class, "FUNCTION", None)
+    if not func_name:
+        return None, f"Node {class_type} does not define a FUNCTION attribute"
+    
+    func = getattr(node_class(), func_name)
+    if not func:
+        return None, f"Function {func_name} not found in node {class_type}"
+    
+    # 使用inspect获取函数签名和参数顺序
+    import inspect
+    signature = inspect.signature(func)
+    param_names = list(signature.parameters.keys())
+    
+    # 移除self参数(如果存在)
+    if len(param_names) > 0 and param_names[0] == 'self':
+        param_names = param_names[1:]
+    
+    print(f"Function signature for {class_type}.{func_name}: {param_names}")
+    
+    # 根据函数签名排序参数
+    input_args = []
+    for param in param_names:
+        if param in input_names_to_values:
+            input_args.append(input_names_to_values[param])
+        else:
+            # 检查参数是否有默认值，如果没有则报错
+            if signature.parameters[param].default == inspect.Parameter.empty:
+                return None, f"Missing required parameter: {param} for {class_type}.{func_name}"
+    
+    # 特殊处理SaveImage节点的张量输入 - 分离梯度
+    if class_type == "SaveImage" and "images" in input_names_to_values:
+        images = input_names_to_values["images"]
+        if hasattr(images, "detach"):
+            detached_images = images.detach()
+            input_names_to_values["images"] = detached_images
+            print("Detaching tensor gradients for SaveImage node")
+            
+            # 确保更新到input_args列表
+            img_index = param_names.index("images") if "images" in param_names else -1
+            if img_index >= 0 and img_index < len(input_args):
+                input_args[img_index] = detached_images
+    
+    # 验证参数
+    print(f"Executing node {node_id} with {len(input_args)} inputs")
+    for i, arg in enumerate(input_args):
+        param_name = param_names[i] if i < len(param_names) else f"param{i}"
+        print(f"  Input {i} ({param_name}): {type(arg).__name__} at {id(arg)}")
+    
     # 执行节点
     try:
-        func_name = getattr(node_instance, "FUNCTION", "execute")
-        outputs = getattr(node_instance, func_name)(*input_args)
+        print(f"Calling {func_name} on {class_type}")
+        outputs = func(*input_args)
         
         # 保存输出 - 直接存储原始对象引用
         if state_manager:
-            state_manager.set_node_output(node_id, outputs)
+            state_manager.node_outputs[node_id] = outputs
             
         return outputs, None
     except Exception as e:
