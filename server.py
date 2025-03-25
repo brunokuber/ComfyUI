@@ -164,6 +164,7 @@ class PromptServer():
         self.messages = asyncio.Queue()
         self.client_session:Optional[aiohttp.ClientSession] = None
         self.number = 0
+        self.last_prompt_id = None
 
         middlewares = [cache_control]
         if args.enable_compress_response_body:
@@ -708,46 +709,108 @@ class PromptServer():
 
         @routes.post('/api/node/register')
         async def register_node(request):
-            """注册一个持久化节点"""
-            data = await request.json()
-            node_id = data.get("node_id")
-            node_data = data.get("node_data")
-            
-            if not node_id or not node_data:
-                return web.json_response({"error": "Missing node_id or node_data"}, status=400)
-            
-            self.node_state_manager.register_persistent_node(node_id, node_data)
-            return web.json_response({"status": "success"})
+            """注册节点数据到持久化存储"""
+            try:
+                data = await request.json()
+                node_id = data.get('node_id')
+                node_data = data.get('node_data')
+                
+                if not node_id or not node_data:
+                    return web.json_response({"error": "Missing node_id or node_data"}, status=400)
+                
+                # 确保存储节点数据时包含完整的信息
+                if 'class_type' not in node_data:
+                    return web.json_response({"error": "Node data must include class_type"}, status=400)
+                
+                # 初始化NodeStateManager如果尚未初始化
+                if not hasattr(request.app, 'node_state_manager'):
+                    request.app.node_state_manager = NodeStateManager()
+                
+                # 存储节点数据 - 使用正确的方法名
+                request.app.node_state_manager.register_persistent_node(node_id, node_data)
+                
+                return web.json_response({"status": "success", "node_id": node_id})
+            except Exception as e:
+                traceback.print_exc()
+                return web.json_response({"error": str(e)}, status=500)
 
         @routes.post('/api/node/execute/{node_id}')
         async def execute_node(request):
             """执行特定节点"""
-            node_id = request.match_info['node_id']
-            data = await request.json()
-            
-            # 获取节点数据
-            node_data = None
-            if node_id in self.node_state_manager.persistent_nodes:
-                node_data = self.node_state_manager.persistent_nodes[node_id]["data"]
-            elif "node_data" in data:
-                node_data = data["node_data"]
-            else:
-                return web.json_response({"error": "Node not registered and no node_data provided"}, status=400)
-            
-            # 获取自定义输入
-            custom_inputs = data.get("inputs", {})
-            
-            # 执行节点
-            outputs, error = execution.execute_single_node(self, node_id, node_data, custom_inputs, self.node_state_manager)
-            
-            if error:
-                return web.json_response({"error": error}, status=400)
-            
-            return web.json_response({
-                "status": "success",
-                "node_id": node_id,
-                "outputs": [output.tolist() if hasattr(output, "tolist") else output for output in outputs]
-            })
+            try:
+                node_id = request.match_info['node_id']
+                data = await request.json()
+                
+                # 获取节点数据
+                node_data = None
+                if node_id in request.app.node_state_manager.persistent_nodes:
+                    node_data = request.app.node_state_manager.persistent_nodes[node_id]["data"].copy()
+                elif "node_data" in data:
+                    node_data = data["node_data"].copy()
+                else:
+                    return web.json_response({"error": "Node not registered and no node_data provided"}, status=400)
+                
+                # 获取自定义输入 - 如果提供了inputs，将其合并到节点数据中
+                custom_inputs = data.get("inputs", {})
+                if custom_inputs:
+                    # 确保node_data有inputs字段
+                    if "inputs" not in node_data:
+                        node_data["inputs"] = {}
+                    # 合并自定义输入
+                    node_data["inputs"].update(custom_inputs)
+                
+                # 创建模拟的extra_data，适配特殊节点如KSampler
+                extra_data = {}
+                # 确保提供了prompt_id
+                if hasattr(request.app, 'last_prompt_id') and request.app.last_prompt_id:
+                    extra_data["prompt_id"] = request.app.last_prompt_id
+                else:
+                    extra_data["prompt_id"] = data.get("prompt_id", "api_execution")
+                    # 保存此ID以供后续使用
+                    request.app.last_prompt_id = extra_data["prompt_id"]
+                    
+                extra_data["extra_pnginfo"] = data.get("extra_pnginfo", {})
+                
+                # 执行节点 - 传递request.app作为server参数
+                outputs, error = execution.execute_single_node(request.app, node_id, node_data, extra_data, request.app.node_state_manager)
+                
+                if error:
+                    return web.json_response({"error": error}, status=400)
+                
+                # 处理输出为可序列化格式
+                if outputs is None:
+                    serializable_outputs = None
+                elif isinstance(outputs, (list, tuple)):
+                    serializable_outputs = []
+                    for output in outputs:
+                        if hasattr(output, "detach") and hasattr(output, "cpu"):
+                            # 处理张量类型
+                            try:
+                                serializable_outputs.append(str(output))
+                            except:
+                                serializable_outputs.append(f"<tensor at {id(output)}>")
+                        else:
+                            # 其他类型转换
+                            try:
+                                # 尝试简单字符串化
+                                serializable_outputs.append(str(output))
+                            except:
+                                serializable_outputs.append(f"<object at {id(output)}>")
+                else:
+                    # 单一输出处理
+                    try:
+                        serializable_outputs = str(outputs)
+                    except:
+                        serializable_outputs = f"<object at {id(outputs)}>"
+                
+                return web.json_response({
+                    "status": "success",
+                    "node_id": node_id,
+                    "outputs": serializable_outputs
+                })
+            except Exception as e:
+                traceback.print_exc()
+                return web.json_response({"error": str(e)}, status=500)
 
         @routes.get('/api/node/output/{node_id}')
         async def get_node_output(request):
