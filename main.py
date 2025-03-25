@@ -11,6 +11,16 @@ import itertools
 import utils.extra_config
 import logging
 import json
+import argparse
+
+parser = argparse.ArgumentParser()
+parser.add_argument("--listen", type=str, default="127.0.0.1", help="IP to listen on")
+parser.add_argument("--port", type=int, default=8188, help="Port to listen on")
+parser.add_argument("--preload-nodes", action="store_true", help="Preload specified nodes at startup for faster execution.")
+parser.add_argument("--disable-cuda-malloc", action="store_true", help="Disable the use of torch.cuda.malloc_async which prevents out of memory errors but uses more VRAM.")
+parser.add_argument("--disable-xformers", action="store_true", help="Disable the xformers library.")
+
+comfy_args = parser.parse_args()
 
 if __name__ == "__main__":
     #NOTE: These do not do anything on core ComfyUI which should already have no communication with the internet, they are for custom nodes.
@@ -295,7 +305,7 @@ def start_comfyui(asyncio_loop=None):
     server.node_state_manager = NodeStateManager()
     
     # 预热指定节点(可选)
-    if args.preload_nodes:
+    if hasattr(args, 'preload_nodes') and args.preload_nodes:
         preload_nodes_from_config(server.node_state_manager)
 
     # Returning these so that other code can integrate with the ComfyUI loop and server
@@ -310,18 +320,62 @@ def preload_nodes_from_config(state_manager):
             with open(config_path, 'r') as f:
                 config = json.load(f)
                 
-            for node_config in config:
-                node_id = node_config.get("id")
-                node_data = node_config.get("data")
-                if node_id and node_data:
-                    logging.info(f"Preloading node: {node_id}")
+            # 检查是否使用API格式
+            if isinstance(config, dict) and not config.get("nodes", None):
+                # API格式 - 直接按节点ID遍历
+                for node_id, node_data in config.items():
+                    persistent = node_data.get("_meta", {}).get("persistent", True)
+                    logging.info(f"Registering persistent node: {node_id}")
                     state_manager.register_persistent_node(node_id, node_data)
                     
-                    # 如果需要立即加载模型，可以在这里执行节点
-                    if node_config.get("preload", False):
+                    # 如果需要立即加载，执行节点
+                    if persistent:
                         execute_single_node(None, node_id, node_data, None, state_manager)
+            # 检查是否为GUI格式
+            elif isinstance(config, dict) and config.get("nodes", None):
+                # GUI格式 - 需要转换为API格式
+                for node in config["nodes"]:
+                    node_id = str(node["id"])
+                    node_data = {
+                        "class_type": node["type"],
+                        "inputs": {}
+                    }
+                    
+                    # 提取widget值作为直接输入
+                    if "widgets_values" in node and len(node.get("widgets_values", [])) > 0:
+                        # 通常需要映射widget到input名称，这是简化版
+                        widget_inputs = extract_widget_inputs(node)
+                        node_data["inputs"].update(widget_inputs)
+                    
+                    logging.info(f"Registering node from GUI format: {node_id}")
+                    state_manager.register_persistent_node(node_id, node_data)
+            else:
+                logging.warning("Unknown preload_nodes.json format")
+                
         except Exception as e:
             logging.error(f"Error preloading nodes: {e}")
+
+
+def extract_widget_inputs(node):
+    """从GUI节点格式提取widget值作为输入参数"""
+    # 这是一个简化版，完整实现需要基于节点类型处理不同的widget
+    inputs = {}
+    
+    # 示例实现 - 针对一些常见节点类型
+    if node["type"] == "CheckpointLoaderSimple" and len(node.get("widgets_values", [])) > 0:
+        inputs["ckpt_name"] = node["widgets_values"][0]
+    
+    elif node["type"] == "EmptyLatentImage" and len(node.get("widgets_values", [])) >= 3:
+        inputs["width"] = node["widgets_values"][0]
+        inputs["height"] = node["widgets_values"][1]
+        inputs["batch_size"] = node["widgets_values"][2]
+    
+    elif node["type"] == "CLIPTextEncode" and len(node.get("widgets_values", [])) > 0:
+        inputs["text"] = node["widgets_values"][0]
+    
+    # 添加更多节点类型的处理...
+    
+    return inputs
 
 
 if __name__ == "__main__":
