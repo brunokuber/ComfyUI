@@ -1,3 +1,5 @@
+import threading
+
 class NodeStateManager:
     def __init__(self):
         self.persistent_nodes = {}  # 存储持久化节点的状态
