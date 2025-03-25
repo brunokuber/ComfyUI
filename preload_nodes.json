@@ -1,0 +1,24 @@
+{
+  "checkpoint_loader": {
+    "class_type": "CheckpointLoaderSimple",
+    "inputs": {
+      "ckpt_name": "v1-5-pruned.ckpt"
+    },
+    "_meta": {
+      "title": "Load Checkpoint",
+      "persistent": true
+    }
+  },
+  "empty_latent": {
+    "class_type": "EmptyLatentImage",
+    "inputs": {
+      "width": 512,
+      "height": 512,
+      "batch_size": 1
+    },
+    "_meta": {
+      "title": "Empty Latent Image",
+      "persistent": true
+    }
+  }
+} 
