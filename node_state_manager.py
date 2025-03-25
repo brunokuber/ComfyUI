@@ -19,15 +19,29 @@ class NodeStateManager:
     def get_node_output(self, node_id, output_index=0):
         """获取节点的输出"""
         with self.lock:
-            if node_id in self.node_outputs:
-                outputs = self.node_outputs[node_id]
-                if output_index < len(outputs):
+            if node_id not in self.node_outputs:
+                return None
+                
+            outputs = self.node_outputs[node_id]
+            
+            # 处理不同类型的输出
+            if isinstance(outputs, tuple) or isinstance(outputs, list):
+                # 输出是元组或列表 - 标准ComfyUI节点格式
+                if 0 <= output_index < len(outputs):
                     return outputs[output_index]
-        return None
+                else:
+                    return None
+            else:
+                # 输出是单一值 - 某些节点只返回一个对象
+                if output_index == 0:
+                    return outputs
+                else:
+                    return None
         
     def set_node_output(self, node_id, outputs):
         """设置节点的输出"""
         with self.lock:
+            # 直接存储原始输出，不进行任何转换
             self.node_outputs[node_id] = outputs
             
     def set_custom_input(self, node_id, input_name, input_value):
