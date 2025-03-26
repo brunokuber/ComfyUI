@@ -856,10 +856,10 @@ class PromptServer():
         @routes.get("/api/node/state")
         async def get_node_state(request):
             """获取节点状态管理器的当前状态"""
-            if not self.node_state_manager:
+            if not hasattr(request.app, 'node_state_manager') or request.app.node_state_manager is None:
                 return web.json_response({"error": "Node state manager not initialized"}, status=500)
             
-            state = self.node_state_manager.export_state()
+            state = request.app.node_state_manager.export_state()
             return web.json_response(state)
 
     async def setup(self):
@@ -893,6 +893,8 @@ class PromptServer():
         self.app.add_routes([
             web.static('/', self.web_root),
         ])
+
+        self.app.node_state_manager = self.node_state_manager
 
     def get_queue_info(self):
         prompt_info = {}
