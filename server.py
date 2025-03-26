@@ -853,6 +853,15 @@ class PromptServer():
             self.node_state_manager.set_custom_input(node_id, input_name, input_value)
             return web.json_response({"status": "success"})
 
+        @routes.get("/api/node/state")
+        async def get_node_state(request):
+            """获取节点状态管理器的当前状态"""
+            if not self.node_state_manager:
+                return web.json_response({"error": "Node state manager not initialized"}, status=500)
+            
+            state = self.node_state_manager.export_state()
+            return web.json_response(state)
+
     async def setup(self):
         timeout = aiohttp.ClientTimeout(total=None) # no timeout
         self.client_session = aiohttp.ClientSession(timeout=timeout)
