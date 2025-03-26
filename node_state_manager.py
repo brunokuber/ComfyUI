@@ -54,4 +54,13 @@ class NodeStateManager:
     def get_custom_inputs(self, node_id):
         """获取节点的所有自定义输入"""
         with self.lock:
-            return self.node_inputs.get(node_id, {}) 
+            return self.node_inputs.get(node_id, {})
+
+    def export_state(self):
+        """导出当前状态管理器的内容，用于调试和检查"""
+        with self.lock:
+            return {
+                "persistent_nodes": self.persistent_nodes,
+                "node_outputs": {k: str(type(v)) for k, v in self.node_outputs.items()},  # 只返回类型，避免大量数据
+                "node_inputs": self.node_inputs
+            } 
