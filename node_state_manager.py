@@ -94,15 +94,39 @@ class DistributedNodeStateManager(NodeStateManager):
         logging.info(f"DistributedNodeStateManager initialized: rank={rank}, world_size={world_size}")
             
     def register_persistent_node(self, node_id, node_data):
-        """注册持久化节点，如果分布式模式则广播到所有进程"""
+        """注册持久化节点，支持通配符节点类型匹配"""
         with self.lock:
             # 根据节点类型决定该节点应该运行在哪个GPU上
             if self.distributed_mode and "class_type" in node_data:
                 class_type = node_data["class_type"]
+                assigned_gpu = None
+                
+                # 1. 检查是否有精确匹配
                 for gpu_id, specs in self.node_specs.items():
                     if class_type in specs:
                         self.node_assignments[node_id] = int(gpu_id)
+                        assigned_gpu = int(gpu_id)
                         break
+                
+                # 2. 如果没有精确匹配，检查通配符
+                if assigned_gpu is None:
+                    for gpu_id, specs in self.node_specs.items():
+                        if "*" in specs or "ALL" in specs:
+                            self.node_assignments[node_id] = int(gpu_id)
+                            assigned_gpu = int(gpu_id)
+                            break
+                
+                #     # 2. 如果没有精确匹配，检查通配符并应用负载均衡
+                # if assigned_gpu is None:
+                #     wildcard_gpus = []
+                #     for gpu_id, specs in self.node_specs.items():
+                #         if "*" in specs or "ALL" in specs:
+                #             wildcard_gpus.append(int(gpu_id))
+                    
+                #     if wildcard_gpus:
+                #         # 简单轮询均衡 - 可以根据节点ID或类型hash来分配
+                #         assigned_gpu = wildcard_gpus[hash(node_id) % len(wildcard_gpus)]
+                #         self.node_assignments[node_id] = assigned_gpu
             
             # 默认分配给当前GPU
             if node_id not in self.node_assignments:
